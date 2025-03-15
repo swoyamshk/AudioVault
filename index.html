@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spotify Playback</title>
+  <script src="https://sdk.scdn.co/spotify-player.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 20px;
+    }
+    button {
+      margin: 10px;
+      padding: 10px;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Spotify Music Playback</h1>
+  <button id="loginButton">Login to Spotify</button>
+  <div id="playerControls" style="display:none;">
+    <h3>Now Playing: <span id="songTitle">None</span></h3>
+    <button id="playButton">Play</button>
+    <button id="pauseButton">Pause</button>
+  </div>
+
+  <script>
+    const loginButton = document.getElementById("loginButton");
+    const playButton = document.getElementById("playButton");
+    const pauseButton = document.getElementById("pauseButton");
+    const playerControls = document.getElementById("playerControls");
+    const songTitle = document.getElementById("songTitle");
+
+    let player, accessToken;
+
+    // Redirect user to login
+    loginButton.addEventListener("click", () => {
+      window.location.href = "http://localhost:3000/login";
+    });
+
+    // Check if access token is available in the URL
+    window.onload = () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      accessToken = urlParams.get("access_token");
+
+      if (accessToken) {
+        initializePlayer();
+        loginButton.style.display = "none";
+        playerControls.style.display = "block";
+      }
+    };
+
+    // Initialize Spotify Web Playback SDK
+    function initializePlayer() {
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        player = new Spotify.Player({
+          name: "Web Playback SDK",
+          getOAuthToken: (cb) => {
+            cb(accessToken);
+          },
+          volume: 0.5,
+        });
+
+        player.addListener("ready", ({ device_id }) => {
+  console.log("Device ID set:", device_id); // Add this log
+  setDeviceId(device_id);
+});
+
+        player.addListener("player_state_changed", (state) => {
+          if (!state) return;
+          songTitle.textContent = state.track_window.current_track.name;
+        });
+
+        player.connect();
+      };
+    }
+
+    // Transfer playback to the SDK's device
+    async function transferPlayback(device_id) {
+      await fetch("https://api.spotify.com/v1/me/player", {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ device_ids: [device_id], play: true }),
+      });
+    }
+
+    // Play music
+    playButton.addEventListener("click", () => {
+      player.resume();
+    });
+
+    // Pause music
+    pauseButton.addEventListener("click", () => {
+      player.pause();
+    });
+  </script>
+</body>
+</html>
