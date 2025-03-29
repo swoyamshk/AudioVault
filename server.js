@@ -1,14 +1,350 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+// MongoDB Connection
+mongoose.connect("mongodb://0.0.0.0:27017/audiovault", {
+  useNewUrlParser: true,
+  useUnifiedTopology: true
+})
+.then(() => console.log("MongoDB connected"))
+.catch(err => console.error("MongoDB connection error:", err));
+
+// User Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: { type: String, required: true, unique: true },
+  password: { type: String, required: true },
+  spotifyConnected: { type: Boolean, default: false },
+  spotifyRefreshToken: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const User = mongoose.model("User", userSchema);
+
+// JWT Secret
+const JWT_SECRET = "your_jwt_secret_key"; // Change this to a secure random string in production
+
+// Spotify credentials (unchanged)
 const CLIENT_ID = "60479c2e1ab447ad8209ee337cd74a7f";
 const CLIENT_SECRET = "092b86385636484b83e8f0ca9bfdb88b";
 const REDIRECT_URI = "http://localhost:4000/callback";
+
+// User Registration
+app.post("/api/register", async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    
+    // Check if user already exists
+    const existingUser = await User.findOne({ $or: [{ email }, { username }] });
+    if (existingUser) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "User with this email or username already exists" 
+      });
+    }
+    
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    
+    // Create new user
+    const user = new User({
+      username,
+      email,
+      password: hashedPassword
+    });
+    
+    await user.save();
+    
+    // Create JWT
+    const token = jwt.sign(
+      { id: user._id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+    
+    res.status(201).json({
+      success: true,
+      message: "User registered successfully",
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        spotifyConnected: user.spotifyConnected
+      }
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error during registration" 
+    });
+  }
+});
+
+// User Login
+app.post("/api/login", async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    // Find user
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid username or password" 
+      });
+    }
+    
+    // Verify password
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Invalid username or password" 
+      });
+    }
+    
+    // Create JWT
+    const token = jwt.sign(
+      { id: user._id, username: user.username },
+      JWT_SECRET,
+      { expiresIn: "24h" }
+    );
+    
+    res.json({
+      success: true,
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        username: user.username,
+        email: user.email,
+        spotifyConnected: user.spotifyConnected,
+        spotifyRefreshToken: user.spotifyRefreshToken
+      }
+    });
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error during login" 
+    });
+  }
+});
+
+// Middleware to verify JWT
+const verifyToken = (req, res, next) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ 
+      success: false, 
+      message: "Access denied. No token provided." 
+    });
+  }
+  
+  try {
+    const verified = jwt.verify(token, JWT_SECRET);
+    req.user = verified;
+    next();
+  } catch (error) {
+    res.status(401).json({ 
+      success: false, 
+      message: "Invalid token" 
+    });
+  }
+};
+
+// Get user profile
+app.get("/api/profile", verifyToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    res.json({
+      success: true,
+      user
+    });
+  } catch (error) {
+    console.error("Profile error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Server error fetching profile" 
+    });
+  }
+});
+
+app.get("/api/spotify-auth", verifyToken, (req, res) => {
+  const userId = req.user.id;
+  
+  // We'll use state parameter to maintain user context during OAuth flow
+  const state = Buffer.from(JSON.stringify({ userId })).toString('base64');
+  
+  const scope = "streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state playlist-modify-public playlist-modify-private user-library-read user-library-modify user-top-read user-read-recently-played";
+
+  const authUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${CLIENT_ID}&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${state}`;
+  
+  res.json({ authUrl });
+});
+
+// Consolidated callback route handling
+app.get("/callback", async (req, res) => {
+  const code = req.query.code;
+  const stateParam = req.query.state;
+  
+  if (!code) return res.status(400).send("Authorization code not found");
+
+  let userId = null;
+  
+  // Extract user info from state if available
+  if (stateParam) {
+    try {
+      const stateData = JSON.parse(Buffer.from(stateParam, 'base64').toString());
+      userId = stateData.userId;
+    } catch (e) {
+      console.error("Failed to parse state parameter:", e);
+    }
+  }
+
+  try {
+    console.log("Exchanging code for token...");
+    const response = await axios.post(
+      "https://accounts.spotify.com/api/token",
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+      }),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    const { access_token, refresh_token } = response.data;
+    
+    // Link Spotify account to user account if userId is provided
+    if (userId) {
+      try {
+        // Get Spotify user data to verify connection
+        const spotifyUser = await axios.get("https://api.spotify.com/v1/me", {
+          headers: { Authorization: `Bearer ${access_token}` }
+        });
+        
+        // Update user in database
+        await User.findByIdAndUpdate(userId, {
+          spotifyConnected: true,
+          spotifyRefreshToken: refresh_token,
+          spotifyId: spotifyUser.data.id
+        });
+        
+        console.log(`Spotify account (${spotifyUser.data.id}) linked to user: ${userId}`);
+      } catch (linkError) {
+        console.error("Failed to link Spotify account:", linkError);
+      }
+    }
+    
+    // Redirect back to frontend with tokens
+    res.redirect(`http://localhost:3000/auth-callback?access_token=${access_token}&refresh_token=${refresh_token}&userId=${userId || ''}`);
+  } catch (error) {
+    console.error("Error exchanging code:", error.response?.data || error.message);
+    res.status(500).send("Failed to authenticate with Spotify. Error: " + (error.response?.data?.error_description || error.message));
+  }
+});
+
+// Connect Spotify account to user
+app.post("/api/connect-spotify", verifyToken, async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    
+    // Update user record
+    await User.findByIdAndUpdate(req.user.id, {
+      spotifyConnected: true,
+      spotifyRefreshToken: refreshToken
+    });
+    
+    res.json({
+      success: true,
+      message: "Spotify account connected successfully"
+    });
+  } catch (error) {
+    console.error("Spotify connection error:", error);
+    res.status(500).json({ 
+      success: false, 
+      message: "Failed to connect Spotify account" 
+    });
+  }
+});
+
+// Modified callback route to handle user account linking
+app.get("/callback", async (req, res) => {
+  const code = req.query.code;
+  const userId = req.query.state; // We'll pass user ID as state parameter
+  
+  if (!code) return res.status(400).send("Authorization code not found.");
+
+  try {
+    console.log("Exchanging code for token...");
+    const response = await axios.post(
+      "https://accounts.spotify.com/api/token",
+      new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+      }),
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
+
+    console.log("Token received successfully");
+    const { access_token, refresh_token } = response.data;
+    
+    // If userId is provided, link to user account
+    if (userId && userId !== "undefined") {
+      try {
+        await User.findByIdAndUpdate(userId, {
+          spotifyConnected: true,
+          spotifyRefreshToken: refresh_token
+        });
+        console.log("Spotify account linked to user:", userId);
+      } catch (linkError) {
+        console.error("Failed to link Spotify account:", linkError);
+      }
+    }
+    
+    res.redirect(`http://localhost:3000?access_token=${access_token}&refresh_token=${refresh_token}&userId=${userId}`);
+  } catch (error) {
+    console.error("Error exchanging code:", error.response?.data || error.message);
+    res.status(500).send("Failed to authenticate. Error: " + (error.response?.data?.error_description || error.message));
+  }
+});
+
+// Modified login route to include user ID
+app.get("/login", (req, res) => {
+  const userId = req.query.userId || "undefined";
+  
+  const scope = "streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state playlist-modify-public playlist-modify-private user-library-read user-library-modify user-top-read user-read-recently-played";
+
+  const authUrl = `https://accounts.spotify.com/authorize?response_type=code&client_id=${CLIENT_ID}&scope=${encodeURIComponent(scope)}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&state=${userId}`;
+  
+  res.redirect(authUrl);
+});
 
 // Login route
 app.get("/login", (req, res) => {

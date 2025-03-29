@@ -166,7 +166,7 @@ const getUserbyId = async (req, res) => {
 
 const updateUser = async (req, res) => {
   const { firstName, lastName, bio, phone } = req.body;
-  const imageUrl = req.file ? `http://localhost:5000/uploads/profile/${req.file.filename}` : null; // Construct the image URL if a file is uploaded
+  const imageUrl = req.file ? `http://localhost:4000/uploads/profile/${req.file.filename}` : null; // Construct the image URL if a file is uploaded
 
   try {
     let user = await User.findById(req.params.id);
