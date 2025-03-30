@@ -66,8 +66,8 @@
 //             >
 //               Explore New Music
 //             </Link>
-//             <Link 
-//               to="/top-tracks" 
+//             <Link
+//               to="/top-tracks"
 //               className="px-4 py-2 text-white hover:bg-gray-700 rounded transition duration-200"
 //             >
 //               Top Tracks
@@ -191,10 +191,64 @@
 // export default Navbar;
 
 // In Navbar.jsx
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
-const Navbar = ({ currentUser, onLoginClick, onLogout }) => {
+const Navbar = ({ onLoginClick, onLogout }) => {
+  const navigate = useNavigate();
+  const [currentUser, setCurrentUser] = useState(null);
+  
+  // Check for tokens in localStorage on component mount
+  useEffect(() => {
+    const checkAuth = () => {
+      const accessToken = localStorage.getItem('access_token');
+      const refreshToken = localStorage.getItem('refresh_token');
+      const savedUsername = localStorage.getItem('username');
+      
+      // If tokens exist, consider the user logged in
+      if (accessToken && refreshToken) {
+        setCurrentUser({ 
+          username: savedUsername || 'User', 
+          accessToken,
+          refreshToken
+        });
+        return true;
+      }
+      return false;
+    };
+
+    // Initial check
+    checkAuth();
+
+    // Add event listener for storage changes (for multi-tab support)
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'access_token' || e.key === 'refresh_token') {
+        // Refresh the page to update authentication state
+        window.location.reload();
+      }
+    });
+
+    return () => {
+      window.removeEventListener('storage', () => {});
+    };
+  }, []);
+  
+  const handleLogout = () => {
+    // Clear tokens from localStorage
+    localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
+    localStorage.removeItem('username');
+    
+    // Update state
+    setCurrentUser(null);
+    
+    // Call the parent component's logout handler
+    if (onLogout) onLogout();
+    
+    // Refresh the page after logout
+    window.location.href = '/';
+  };
+  
   return (
     <nav className="bg-gray-800 p-4">
       <div className="max-w-4xl mx-auto flex justify-between items-center">
@@ -208,13 +262,12 @@ const Navbar = ({ currentUser, onLoginClick, onLogout }) => {
           <Link to="/playlists" className="text-gray-300 hover:text-white">Playlists</Link>
           <Link to="/recommend" className="text-gray-300 hover:text-white">Recommend</Link>
           <Link to="/top-tracks" className="text-gray-300 hover:text-white">Top Tracks</Link>
-          <Link to="/history" className="text-gray-300 hover:text-white">History</Link>
+          {/* <Link to="/history" className="text-gray-300 hover:text-white">History</Link> */}
           
           {currentUser ? (
             <div className="flex items-center">
-              <span className="text-gray-300 mr-2">{currentUser.username}</span>
               <button 
-                onClick={onLogout}
+                onClick={handleLogout}
                 className="text-gray-300 hover:text-white"
               >
                 Logout
